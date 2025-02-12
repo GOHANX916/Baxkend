@@ -1,5 +1,6 @@
 const express = require("express");
 const http = require("http");
+const https = require("https"); // Fix for HTTPS self-ping
 const { WebSocketServer } = require("ws");
 const cors = require("cors");
 
@@ -40,10 +41,11 @@ wss.on("connection", (ws) => {
     });
 });
 
-// Keep Server Alive
+// ✅ **Fix: Self-ping using `https` to keep the server alive**
 setInterval(() => {
-    require("http").get("https://baxkend.onrender.com/");
-    console.log("Self-pinging to keep alive...");
-}, 5 * 60 * 1000);
+    https.get("https://baxkend.onrender.com/", (res) => {
+        console.log("Self-pinging to keep alive... Status:", res.statusCode);
+    }).on("error", (err) => console.error("Ping failed:", err.message));
+}, 5 * 60 * 1000); // Every 5 minutes
 
 server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
