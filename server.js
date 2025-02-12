@@ -1,51 +1,93 @@
 const express = require("express");
 const http = require("http");
-const https = require("https"); // Fix for HTTPS self-ping
-const { WebSocketServer } = require("ws");
+const WebSocket = require("ws");
 const cors = require("cors");
 
 const app = express();
-const PORT = process.env.PORT || 10000;
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
+const wss = new WebSocket.Server({ server });
+
+const PORT = 10000;
+let users = {}; // Store connected users {socket: {id, username, status}}
 
 app.use(cors());
-app.get("/", (req, res) => res.send("WebSocket Server is running"));
+app.use(express.json());
 
-// Store connected clients
-const clients = new Set();
+// Keep server awake on Render
+setInterval(() => {
+  http.get("http://baxkend.onrender.com");
+}, 60000); // Ping every 1 minute
 
-// WebSocket Connection
 wss.on("connection", (ws) => {
-    console.log("A user connected");
-    clients.add(ws);
+  console.log("A user connected");
 
-    ws.on("message", (message) => {
-        console.log("Received:", message.toString());
+  // Assign a unique ID to each user
+  const userId = Date.now();
+  users[ws] = { id: userId, status: "online" };
 
-        // Convert message to object
-        const msgObj = JSON.parse(message);
-        msgObj.seen = false; // Initially, the message is not seen
+  // Notify others of new online user
+  broadcastUserStatus();
 
-        // Broadcast message to all clients except sender
-        clients.forEach((client) => {
-            if (client !== ws && client.readyState === 1) {
-                client.send(JSON.stringify(msgObj));
-            }
-        });
-    });
+  ws.on("message", (message) => {
+    try {
+      let data = JSON.parse(message);
+      
+      if (data.type === "message") {
+        // Broadcast message with single tick (sent)
+        let msg = { 
+          type: "message", 
+          sender: userId, 
+          text: data.text, 
+          status: "✔" 
+        };
+        broadcastMessage(msg);
 
-    ws.on("close", () => {
-        console.log("A user disconnected");
-        clients.delete(ws);
-    });
+        // Simulate message being received
+        setTimeout(() => {
+          msg.status = "✔✔"; // Double tick (received)
+          broadcastMessage(msg);
+        }, 500);
+
+        // Simulate message being seen
+        setTimeout(() => {
+          msg.status = "✔✔ (blue)"; // Blue double tick (seen)
+          broadcastMessage(msg);
+        }, 1500);
+      }
+    } catch (error) {
+      console.error("Error handling message:", error);
+    }
+  });
+
+  ws.on("close", () => {
+    console.log("A user disconnected");
+    delete users[ws];
+    broadcastUserStatus();
+  });
 });
 
-// ✅ **Fix: Self-ping using `https` to keep the server alive**
-setInterval(() => {
-    https.get("https://baxkend.onrender.com/", (res) => {
-        console.log("Self-pinging to keep alive... Status:", res.statusCode);
-    }).on("error", (err) => console.error("Ping failed:", err.message));
-}, 5 * 60 * 1000); // Every 5 minutes
+// Send updated online/offline users
+function broadcastUserStatus() {
+  let onlineUsers = Object.values(users).map((user) => ({
+    id: user.id,
+    status: user.status,
+  }));
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(JSON.stringify({ type: "users", users: onlineUsers }));
+    }
+  });
+}
 
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+// Send message to all connected users
+function broadcastMessage(message) {
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(JSON.stringify(message));
+    }
+  });
+}
+
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
