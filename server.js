@@ -1,93 +1,68 @@
 const express = require("express");
-const http = require("http");
 const WebSocket = require("ws");
+const axios = require("axios");
 const cors = require("cors");
 
+const PORT = process.env.PORT || 10000; // Use Render's dynamic port
 const app = express();
-const server = http.createServer(app);
+app.use(cors());
+
+const server = app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 const wss = new WebSocket.Server({ server });
 
-const PORT = 10000;
-let users = {}; // Store connected users {socket: {id, username, status}}
+let users = {}; // Store connected users
 
-app.use(cors());
-app.use(express.json());
-
-// Keep server awake on Render
-setInterval(() => {
-  http.get("http://baxkend.onrender.com");
-}, 60000); // Ping every 1 minute
-
+// WebSocket Connection
 wss.on("connection", (ws) => {
-  console.log("A user connected");
+    ws.on("message", (data) => {
+        const message = JSON.parse(data);
+        
+        if (message.type === "join") {
+            users[message.username] = ws;
+            broadcast({ type: "updateUsers", users: Object.keys(users) });
+        }
 
-  // Assign a unique ID to each user
-  const userId = Date.now();
-  users[ws] = { id: userId, status: "online" };
+        if (message.type === "message") {
+            sendMessage(message);
+        }
 
-  // Notify others of new online user
-  broadcastUserStatus();
+        if (message.type === "seen") {
+            notifySeen(message);
+        }
+    });
 
-  ws.on("message", (message) => {
-    try {
-      let data = JSON.parse(message);
-      
-      if (data.type === "message") {
-        // Broadcast message with single tick (sent)
-        let msg = { 
-          type: "message", 
-          sender: userId, 
-          text: data.text, 
-          status: "✔" 
-        };
-        broadcastMessage(msg);
-
-        // Simulate message being received
-        setTimeout(() => {
-          msg.status = "✔✔"; // Double tick (received)
-          broadcastMessage(msg);
-        }, 500);
-
-        // Simulate message being seen
-        setTimeout(() => {
-          msg.status = "✔✔ (blue)"; // Blue double tick (seen)
-          broadcastMessage(msg);
-        }, 1500);
-      }
-    } catch (error) {
-      console.error("Error handling message:", error);
-    }
-  });
-
-  ws.on("close", () => {
-    console.log("A user disconnected");
-    delete users[ws];
-    broadcastUserStatus();
-  });
+    ws.on("close", () => {
+        const user = Object.keys(users).find((key) => users[key] === ws);
+        if (user) delete users[user];
+        broadcast({ type: "updateUsers", users: Object.keys(users) });
+    });
 });
 
-// Send updated online/offline users
-function broadcastUserStatus() {
-  let onlineUsers = Object.values(users).map((user) => ({
-    id: user.id,
-    status: user.status,
-  }));
-  wss.clients.forEach((client) => {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(JSON.stringify({ type: "users", users: onlineUsers }));
+// Send messages
+function sendMessage(message) {
+    if (users[message.to]) {
+        users[message.to].send(JSON.stringify({ type: "message", ...message, status: "received" }));
     }
-  });
+    if (users[message.from]) {
+        users[message.from].send(JSON.stringify({ type: "message", ...message, status: "sent" }));
+    }
 }
 
-// Send message to all connected users
-function broadcastMessage(message) {
-  wss.clients.forEach((client) => {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(JSON.stringify(message));
+// Notify message seen
+function notifySeen(message) {
+    if (users[message.from]) {
+        users[message.from].send(JSON.stringify({ type: "seen", id: message.id }));
     }
-  });
 }
 
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+// Broadcast updates
+function broadcast(data) {
+    wss.clients.forEach((client) => client.send(JSON.stringify(data)));
+}
+
+// Prevent Render from sleeping
+setInterval(() => {
+    axios.get("https://baxkend.onrender.com/").catch(() => {});
+}, 300000); // Every 5 minutes
+
+app.get("/", (req, res) => res.send("Chat Server is Running"));
